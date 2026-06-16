@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
 
 type HistoryItem = {
   keyword: string;
@@ -29,6 +30,7 @@ export default function Home() {
   // 通用
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     try {
@@ -48,6 +50,7 @@ export default function Home() {
   const handleGenerate = async () => {
     if (!keyword.trim()) return;
     setLoading(true);
+    setError("");
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -55,6 +58,9 @@ export default function Home() {
         body: JSON.stringify({ keyword, platform }),
       });
       const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "生成失败，请稍后重试");
+      }
       setResult(data.content);
       setCopied(false);
 
@@ -68,6 +74,9 @@ export default function Home() {
         const next = [item, ...history].slice(0, 50);
         persistHistory(next);
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "生成失败，请稍后重试";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -76,6 +85,7 @@ export default function Home() {
   const handleAnalyze = async () => {
     if (!title.trim()) return;
     setLoading(true);
+    setError("");
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -83,8 +93,14 @@ export default function Home() {
         body: JSON.stringify({ title }),
       });
       const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "生成失败，请稍后重试");
+      }
       setAnalyzeResult(data.content);
       setCopied(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "生成失败，请稍后重试";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -98,6 +114,29 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const buildFileName = (extension: string) => {
+    const base = (mode === "generate" ? keyword : title).trim() || "content";
+    return `${base}.${extension}`;
+  };
+
+  const handleDownload = (extension: "md" | "txt") => {
+    if (!currentResult) return;
+    const blob = new Blob([currentResult], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = buildFileName(extension);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportMarkdown = () => handleDownload("md");
+  const handleExportTxt = () => handleDownload("txt");
+
   const handleViewHistory = (item: HistoryItem) => {
     setMode("generate");
     setKeyword(item.keyword);
@@ -109,6 +148,7 @@ export default function Home() {
   const handleSwitchMode = (next: Mode) => {
     setMode(next);
     setCopied(false);
+    setError("");
   };
 
   const formatTime = (iso: string) => {
@@ -121,9 +161,65 @@ export default function Home() {
     }
   };
 
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
   const recentHistory = history.slice(0, 5);
   const currentResult = mode === "generate" ? result : analyzeResult;
   const resultTitle = mode === "generate" ? "生成结果" : "拆解结果";
+
+  const generatedSections = (() => {
+    if (mode !== "generate") return null;
+    const markers = [
+      "【用户画像】",
+      "【核心痛点】",
+      "【传播爆点】",
+      "【爆款结构】",
+      "【5个爆款标题】",
+      "【推荐标题】",
+      "【原创文案】",
+    ];
+    const keys = [
+      "persona",
+      "pain",
+      "hook",
+      "structure",
+      "titles",
+      "recommend",
+      "copy",
+    ];
+    const labels = [
+      "用户画像",
+      "核心痛点",
+      "传播爆点",
+      "爆款结构",
+      "5 个爆款标题",
+      "推荐标题",
+      "原创文案",
+    ];
+    const positions = markers
+      .map((m) => ({ m, idx: currentResult.indexOf(m) }))
+      .filter((p) => p.idx >= 0)
+      .sort((a, b) => a.idx - b.idx);
+    if (positions.length < 2) return null;
+    const sections = positions.map((p, i) => {
+      const start = p.idx + p.m.length;
+      const end = i + 1 < positions.length ? positions[i + 1].idx : currentResult.length;
+      const body = currentResult.slice(start, end).trim();
+      const keyIndex = markers.indexOf(p.m);
+      return {
+        key: keys[keyIndex],
+        label: labels[keyIndex],
+        body,
+      };
+    });
+    return sections;
+  })();
+
+  const recommendSection = generatedSections?.find((s) => s.key === "recommend");
+  const copySection = generatedSections?.find((s) => s.key === "copy");
+  const detailSections = generatedSections?.filter(
+    (s) => s.key !== "recommend" && s.key !== "copy",
+  );
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-zinc-50 via-white to-rose-50 px-4 py-12">
@@ -187,9 +283,16 @@ export default function Home() {
               <button
                 onClick={handleGenerate}
                 disabled={loading}
-                className="rounded-xl bg-gradient-to-r from-rose-500 to-orange-500 px-8 py-3.5 text-base font-semibold text-white shadow-md shadow-rose-200 transition-all hover:shadow-lg hover:shadow-rose-300 active:scale-95 disabled:opacity-60"
+                className="rounded-xl bg-gradient-to-r from-rose-500 to-orange-500 px-8 py-3.5 text-base font-semibold text-white shadow-md shadow-rose-200 transition-all hover:shadow-lg hover:shadow-rose-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {loading ? "生成中…" : "✨ 生成文案"}
+                {loading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    正在生成中...
+                  </span>
+                ) : (
+                  "✨ 生成文案"
+                )}
               </button>
             </div>
 
@@ -245,9 +348,16 @@ export default function Home() {
               <button
                 onClick={handleAnalyze}
                 disabled={loading}
-                className="rounded-xl bg-gradient-to-r from-sky-500 to-indigo-500 px-8 py-3.5 text-base font-semibold text-white shadow-md shadow-sky-200 transition-all hover:shadow-lg hover:shadow-sky-300 active:scale-95 disabled:opacity-60"
+                className="rounded-xl bg-gradient-to-r from-sky-500 to-indigo-500 px-8 py-3.5 text-base font-semibold text-white shadow-md shadow-sky-200 transition-all hover:shadow-lg hover:shadow-sky-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {loading ? "分析中…" : "🔍 开始分析"}
+                {loading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    正在生成中...
+                  </span>
+                ) : (
+                  "🔍 开始分析"
+                )}
               </button>
             </div>
 
@@ -260,10 +370,46 @@ export default function Home() {
           </>
         )}
 
-        {/* 结果展示区域 */}
-        {currentResult && (
+        {/* 错误提示 */}
+        {error && !loading && (
+          <div className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-5 py-3 text-left text-sm text-rose-600 shadow-sm">
+            <span className="mr-1">⚠️</span>
+            {error}
+          </div>
+        )}
+
+        {/* Loading 状态 */}
+        {loading && (
           <div className="w-full rounded-2xl border border-zinc-200 bg-white p-6 text-left shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-zinc-800">
+                {mode === "generate" ? "生成结果" : "拆解结果"}
+              </h2>
+              <span className="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-500">
+                进行中
+              </span>
+            </div>
+            <ul className="flex flex-col gap-2 text-base text-zinc-600">
+              {(mode === "generate"
+                ? ["正在分析用户需求...", "正在生成爆款标题...", "正在撰写正文..."]
+                : ["正在拆解目标人群...", "正在提炼爆款钩子...", "正在生成仿写公式..."]
+              ).map((text, i) => (
+                <li key={i} className="flex items-center gap-3">
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+                  </span>
+                  <span className="animate-pulse">{text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* 结果展示区域 */}
+        {!loading && currentResult && (
+          <div className="w-full rounded-2xl border border-zinc-200 bg-white p-6 text-left shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-zinc-800">{resultTitle}</h2>
               <div className="flex items-center gap-2">
                 {mode === "generate" && (
@@ -285,6 +431,20 @@ export default function Home() {
                   </button>
                 )}
                 <button
+                  onClick={handleExportMarkdown}
+                  disabled={!currentResult}
+                  className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:border-rose-300 hover:text-rose-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  导出 Markdown
+                </button>
+                <button
+                  onClick={handleExportTxt}
+                  disabled={!currentResult}
+                  className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:border-rose-300 hover:text-rose-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  导出 TXT
+                </button>
+                <button
                   onClick={handleCopy}
                   className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:border-rose-300 hover:text-rose-500 active:scale-95"
                 >
@@ -292,9 +452,89 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            <p className="whitespace-pre-wrap text-base leading-relaxed text-zinc-700">
-              {currentResult}
-            </p>
+
+            {mode === "generate" && (recommendSection || copySection) ? (
+              <>
+                {/* 顶部高亮：推荐标题 + 原创文案 */}
+                <div className="flex flex-col gap-4">
+                  {recommendSection && recommendSection.body && (
+                    <div className="relative overflow-hidden rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50 via-white to-orange-50 p-5 shadow-sm">
+                      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-rose-500 to-orange-500" />
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-base">🔥</span>
+                        <h3 className="text-base font-semibold text-rose-500">推荐标题</h3>
+                      </div>
+                      <div className="prose prose-zinc max-w-none text-left">
+                        <ReactMarkdown>{recommendSection.body}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
+
+                  {copySection && copySection.body && (
+                    <div className="relative overflow-hidden rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 via-white to-indigo-50 p-5 shadow-sm">
+                      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-500 to-indigo-500" />
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-base">📝</span>
+                        <h3 className="text-base font-semibold text-sky-500">原创文案</h3>
+                      </div>
+                      <div className="prose prose-zinc max-w-none text-left">
+                        <ReactMarkdown>{copySection.body}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 折叠区：完整分析 */}
+                {detailSections && detailSections.length > 0 && (
+                  <div className="mt-5">
+                    <button
+                      onClick={() => setShowAnalysis((v) => !v)}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-medium text-zinc-600 transition-all hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 active:scale-[0.99]"
+                    >
+                      <span
+                        className={`inline-block transition-transform duration-300 ${
+                          showAnalysis ? "rotate-0" : "-rotate-90"
+                        }`}
+                      >
+                        ▼
+                      </span>
+                      <span>
+                        {showAnalysis ? "收起完整分析" : "查看完整分析"}
+                      </span>
+                    </button>
+                    <div
+                      className={`grid overflow-hidden transition-all duration-500 ease-in-out ${
+                        showAnalysis
+                          ? "mt-4 grid-rows-[1fr] opacity-100"
+                          : "mt-0 grid-rows-[0fr] opacity-0"
+                      }`}
+                    >
+                      <div className="min-h-0">
+                        <div className="flex flex-col gap-3">
+                          {detailSections.map((s) => (
+                            <div
+                              key={s.key}
+                              className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"
+                            >
+                              <h4 className="mb-2 text-sm font-semibold text-zinc-700">
+                                {s.label}
+                              </h4>
+                              <div className="prose prose-sm prose-zinc max-w-none text-left">
+                                <ReactMarkdown>{s.body}</ReactMarkdown>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="prose prose-zinc max-w-none text-left">
+                <ReactMarkdown>{currentResult}</ReactMarkdown>
+              </div>
+            )}
           </div>
         )}
 
